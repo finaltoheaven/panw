@@ -13,6 +13,11 @@ interface SecurityPolicyTableProps {
   onNotify?: (type: 'success' | 'error' | 'info', title: string, message: string) => void;
 }
 
+function cleanDisabledText(val: any): string {
+  if (typeof val !== 'string') return String(val || '');
+  return val.replace(/\[Disabled\]\s*/gi, '').trim();
+}
+
 export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
   rules,
   setRules,
@@ -143,6 +148,24 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
       return true;
     });
   }, [rules, filters]);
+
+  // Statistics calculation for filtered rules
+  const ruleStats = useMemo(() => {
+    let enabled = 0;
+    let disabled = 0;
+    let scheduled = 0;
+    for (const r of filteredRules) {
+      if (r.enabled) enabled++;
+      else disabled++;
+      if (r.hasSchedule) scheduled++;
+    }
+    return {
+      total: filteredRules.length,
+      enabled,
+      disabled,
+      scheduled,
+    };
+  }, [filteredRules]);
 
   // Pagination calculation
   const totalPages = Math.ceil(filteredRules.length / pageSize) || 1;
@@ -285,7 +308,7 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                 title={rule.enabled ? 'Rule Enabled' : 'Rule Disabled'}
               ></i>
               <span className={rule.enabled ? 'text-slate-900 font-semibold' : 'text-slate-400 line-through'}>
-                {rule.name}
+                {cleanDisabledText(rule.name)}
               </span>
             </span>
             <div className="hidden group-hover:flex items-center space-x-1.5 ml-2">
@@ -317,18 +340,21 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
       case 'tags':
         return (
           <div className="flex flex-wrap gap-1">
-            {rule.tags.map((tag, idx) => (
-              <span
-                key={idx}
-                className={`px-1.5 py-0.5 rounded text-xs font-medium ${
-                  tag === 'none'
-                    ? 'bg-slate-50 text-slate-400 border border-slate-200'
-                    : 'bg-slate-100 border border-slate-200 text-slate-600'
-                }`}
-              >
-                {tag}
-              </span>
-            ))}
+            {rule.tags.map((tag, idx) => {
+              const cleanedTag = cleanDisabledText(tag);
+              return (
+                <span
+                  key={idx}
+                  className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                    cleanedTag === 'none'
+                      ? 'bg-slate-50 text-slate-400 border border-slate-200'
+                      : 'bg-slate-100 border border-slate-200 text-slate-600'
+                  }`}
+                >
+                  {cleanedTag}
+                </span>
+              );
+            })}
           </div>
         );
 
@@ -336,56 +362,94 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
       case 'destinationAddress':
       case 'sourceZone':
       case 'destinationZone': {
-        const strVal = String((rule as any)[key] || 'any');
-        const items = strVal.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
-        if (items.length <= 2) {
-          return (
-            <span className="text-slate-700 font-mono text-xs truncate max-w-[200px] block" title={strVal}>
-              {strVal || 'any'}
-            </span>
-          );
+        const rawVal = (rule as any)[key];
+        const rawItems = Array.isArray(rawVal)
+          ? rawVal
+          : String(rawVal || 'any').split(';');
+
+        const items = rawItems
+          .flatMap((item) => String(item).split(';'))
+          .map((s) => cleanDisabledText(s))
+          .filter(Boolean);
+
+        if (items.length === 0) {
+          return <span className="text-slate-700 font-mono text-xs">any</span>;
         }
+
+        const visibleItems = items.slice(0, 6);
+        const remainingCount = items.length - 6;
+
         return (
-          <div className="flex items-center space-x-1" title={strVal}>
-            <span className="text-slate-700 font-mono text-xs truncate max-w-[150px]">
-              {items.slice(0, 2).join('; ')}
-            </span>
-            <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-bold shrink-0">
-              +{items.length - 2}
-            </span>
+          <div className="flex flex-col space-y-1 py-0.5" title={items.join('\n')}>
+            {visibleItems.map((item, idx) => (
+              <span key={idx} className="text-slate-700 font-mono text-xs leading-snug whitespace-nowrap block">
+                {item}
+              </span>
+            ))}
+            {remainingCount > 0 && (
+              <div className="pt-0.5">
+                <span
+                  className="inline-flex items-center px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 font-bold rounded text-[10px] cursor-help shadow-2xs"
+                  title={`Remaining (${remainingCount}):\n${items.slice(6).join('\n')}`}
+                >
+                  +{remainingCount}
+                </span>
+              </div>
+            )}
           </div>
         );
       }
 
       case 'application': {
-        const apps = rule.application;
-        if (apps.length <= 3) {
+        const rawVal = rule.application;
+        const rawItems = Array.isArray(rawVal)
+          ? rawVal
+          : String(rawVal || 'any').split(';');
+
+        const items = rawItems
+          .flatMap((item) => String(item).split(';'))
+          .map((s) => cleanDisabledText(s))
+          .filter(Boolean);
+
+        if (items.length === 0) {
           return (
-            <div className="flex items-center space-x-1 flex-wrap gap-y-1">
-              {apps.map((app, idx) => (
-                <span
-                  key={idx}
-                  className="px-1.5 py-0.5 bg-orange-100 border border-orange-200 text-orange-800 rounded text-xs font-medium"
-                >
-                  {app}
-                </span>
-              ))}
-            </div>
+            <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded text-xs font-mono">
+              any
+            </span>
           );
         }
+
+        const visibleItems = items.slice(0, 6);
+        const remainingCount = items.length - 6;
+
         return (
-          <div className="flex items-center space-x-1" title={apps.join(', ')}>
-            {apps.slice(0, 2).map((app, idx) => (
-              <span
-                key={idx}
-                className="px-1.5 py-0.5 bg-orange-100 border border-orange-200 text-orange-800 rounded text-xs font-medium"
-              >
-                {app}
-              </span>
-            ))}
-            <span className="px-1.5 py-0.5 bg-orange-200 text-orange-900 border border-orange-300 rounded text-xs font-bold shrink-0">
-              +{apps.length - 2}
-            </span>
+          <div className="flex flex-col items-start space-y-1 py-0.5" title={items.join('\n')}>
+            {visibleItems.map((item, idx) => {
+              const isAny = item.toLowerCase() === 'any';
+              return (
+                <span
+                  key={idx}
+                  className={`inline-block px-2 py-0.5 rounded text-[11px] font-semibold tracking-wide whitespace-nowrap border shadow-2xs ${
+                    isAny
+                      ? 'bg-slate-100 text-slate-600 border-slate-200 font-mono'
+                      : 'bg-orange-50 text-orange-800 border-orange-200/80 hover:bg-orange-100/80 transition-colors'
+                  }`}
+                >
+                  <i className="fa-solid fa-cube text-[9px] mr-1 opacity-70"></i>
+                  {item}
+                </span>
+              );
+            })}
+            {remainingCount > 0 && (
+              <div className="pt-0.5">
+                <span
+                  className="inline-flex items-center px-1.5 py-0.5 bg-orange-100 border border-orange-300 text-orange-900 font-bold rounded text-[10px] cursor-help shadow-2xs"
+                  title={`Remaining Applications (${remainingCount}):\n${items.slice(6).join('\n')}`}
+                >
+                  +{remainingCount} more
+                </span>
+              </div>
+            )}
           </div>
         );
       }
@@ -457,8 +521,8 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
 
       case 'description':
         return (
-          <span className="text-slate-500 text-xs truncate max-w-xs block" title={rule.description}>
-            {rule.description || '—'}
+          <span className="text-slate-500 text-xs truncate max-w-xs block" title={cleanDisabledText(rule.description)}>
+            {cleanDisabledText(rule.description) || '—'}
           </span>
         );
 
@@ -466,11 +530,11 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
         const rawOptions = rule.options || 'none';
         const parts = rawOptions
           .split(';')
-          .map((s) => s.trim())
+          .map((s) => cleanDisabledText(s))
           .filter(Boolean);
 
         if (parts.length <= 1) {
-          return <span className="text-slate-600 text-xs">{rawOptions}</span>;
+          return <span className="text-slate-600 text-xs">{cleanDisabledText(rawOptions)}</span>;
         }
 
         return (
@@ -486,8 +550,8 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
 
       default:
         const val = (rule as any)[key];
-        if (Array.isArray(val)) return val.join(', ');
-        return <span className="text-slate-600 text-xs">{val || 'Any'}</span>;
+        if (Array.isArray(val)) return val.map((v) => cleanDisabledText(v)).join(', ');
+        return <span className="text-slate-600 text-xs">{cleanDisabledText(val) || 'Any'}</span>;
     }
   };
 
@@ -495,10 +559,22 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
     <main className="flex-1 flex flex-col bg-white overflow-hidden relative">
       {/* Content Header Bar */}
       <div className="px-6 py-3.5 border-b border-slate-200 flex flex-wrap justify-between items-center gap-3 shrink-0 bg-white">
-        <div className="flex items-center space-x-3">
-          <h1 className="text-xl font-bold text-slate-800">Security Policies</h1>
-          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded text-xs font-semibold">
-            Rules: {filteredRules.length}
+        <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+          <h1 className="text-xl font-bold text-slate-800 mr-1">Security Policies</h1>
+          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200 rounded text-xs font-semibold">
+            Tổng rules: {ruleStats.total}
+          </span>
+          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded text-xs font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            Enable: {ruleStats.enabled}
+          </span>
+          <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-xs font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            Disable: {ruleStats.disabled}
+          </span>
+          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-xs font-semibold flex items-center gap-1">
+            <i className="fa-solid fa-clock text-[10px]"></i>
+            Có Schedule: {ruleStats.scheduled}
           </span>
 
           {selectedRuleIds.size > 0 && (
@@ -599,25 +675,9 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
             ))}
         </select>
 
-        {/* Action Quick Select */}
-        <select
-          value={filters.actionFilter}
-          onChange={(e) =>
-            setFilters((prev) => ({ ...prev, actionFilter: e.target.value }))
-          }
-          className="py-1 pl-3 pr-8 bg-white border border-slate-300 rounded-sm text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand shadow-xs"
-        >
-          <option value="Any">Any Action</option>
-          <option value="Allow">Allow</option>
-          <option value="Deny">Deny</option>
-          <option value="Drop">Drop</option>
-          <option value="Khác">Khác</option>
-        </select>
-
         {(filters.searchQuery ||
           filters.sourceZoneFilter !== 'Any' ||
-          filters.destinationZoneFilter !== 'Any' ||
-          filters.actionFilter !== 'Any') && (
+          filters.destinationZoneFilter !== 'Any') && (
           <button
             onClick={() =>
               setFilters((prev) => ({
@@ -699,7 +759,7 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                     {activeColumns.map((col) => (
                       <td
                         key={col.key}
-                        className="px-4 py-2 border-r border-slate-200 align-middle"
+                        className="px-4 py-2 border-r border-slate-200 align-top"
                       >
                         {renderCellContent(rule, col.key)}
                       </td>

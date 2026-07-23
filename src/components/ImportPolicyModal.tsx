@@ -197,7 +197,7 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
 
           const getValue = (idx: number, fallback: string = '') => {
             if (idx !== -1 && cols[idx] !== undefined && cols[idx] !== null) {
-              const str = cols[idx].trim();
+              const str = cols[idx].trim().replace(/\[Disabled\]\s*/gi, '');
               return str ? str.replace(/;(?!\s)/g, '; ') : fallback;
             }
             return fallback;
@@ -206,7 +206,7 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
           const parseList = (idx: number, fallback: string[]) => {
             const raw = getValue(idx, '');
             if (!raw) return fallback;
-            const items = raw.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+            const items = raw.split(/[;,]/).map((s) => s.trim().replace(/\[Disabled\]\s*/gi, '')).filter(Boolean);
             return items.length > 0 ? items : fallback;
           };
 
