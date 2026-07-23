@@ -89,3 +89,12 @@ export interface RuleFilters {
   destinationZoneFilter: string;
   actionFilter: string;
 }
+
+export interface AppNotification {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+}

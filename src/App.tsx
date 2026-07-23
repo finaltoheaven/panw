@@ -7,7 +7,7 @@ import { DashboardView } from './components/DashboardView';
 import { AddEditRuleModal } from './components/AddEditRuleModal';
 import { ImportPolicyModal } from './components/ImportPolicyModal';
 
-import { SecurityRule, ColumnKey, RuleFilters } from './types';
+import { SecurityRule, ColumnKey, RuleFilters, AppNotification } from './types';
 import { INITIAL_RULES, ALL_COLUMNS } from './data/mockRules';
 
 export default function App() {
@@ -15,6 +15,44 @@ export default function App() {
   const [globalSearch, setGlobalSearch] = useState('');
   const [rules, setRules] = useState<SecurityRule[]>(INITIAL_RULES);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  // Notifications state
+  const [notifications, setNotifications] = useState<AppNotification[]>([
+    {
+      id: 'init-1',
+      type: 'info',
+      title: 'Policy Management Loaded',
+      message: 'System ready. Rules import and CSV export notifications will appear here.',
+      timestamp: '10:00:00',
+      read: false,
+    },
+  ]);
+
+  const addNotification = (type: 'success' | 'error' | 'info', title: string, message: string) => {
+    const newNotif: AppNotification = {
+      id: `notif-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      type,
+      title,
+      message,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      read: false,
+    };
+    setNotifications((prev) => [newNotif, ...prev]);
+  };
+
+  const handleMarkAsRead = (id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
+  };
+
+  const handleMarkAllAsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  };
+
+  const handleClearNotifications = () => {
+    setNotifications([]);
+  };
 
   // Initialize visible columns mapping
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnKey, boolean>>(() => {
@@ -100,6 +138,10 @@ export default function App() {
         setActiveTab={setActiveTab}
         globalSearch={globalSearch}
         setGlobalSearch={handleGlobalSearchChange}
+        notifications={notifications}
+        onMarkAsRead={handleMarkAsRead}
+        onMarkAllAsRead={handleMarkAllAsRead}
+        onClearNotifications={handleClearNotifications}
       />
 
       {/* Main Workspace Body */}
@@ -127,6 +169,7 @@ export default function App() {
             setFilters={setFilters}
             onOpenAddModal={handleOpenAddModal}
             onOpenEditModal={handleOpenEditModal}
+            onNotify={addNotification}
           />
         )}
 
@@ -147,7 +190,9 @@ export default function App() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImport={handleImportRules}
+        onNotify={addNotification}
       />
     </div>
   );
 }
+

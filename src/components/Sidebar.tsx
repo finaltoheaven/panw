@@ -388,23 +388,48 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Rule Creation Time */}
           <div className="border-t border-slate-100 pt-3">
-            <h4 className="text-xs font-medium text-slate-700 mb-2">
-              Thời gian tạo rule
-            </h4>
+            <div className="flex items-center justify-between mb-1">
+              <h4 className="text-xs font-medium text-slate-700">
+                Thời gian tạo rule (Created)
+              </h4>
+            </div>
+            <p className="text-[10px] text-slate-400 mb-2">Lọc dựa trên ngày ở cột Created</p>
             <div className="space-y-2 text-xs ml-1">
               <div className="relative">
                 <select
                   value={filters.timeRange}
-                  onChange={(e) =>
-                    setFilters((prev) => ({ ...prev, timeRange: e.target.value }))
-                  }
-                  className="w-full py-1.5 pl-3 pr-8 bg-white border border-slate-300 rounded-sm text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand shadow-xs appearance-none"
+                  onChange={(e) => {
+                    const range = e.target.value;
+                    const now = new Date('2026-07-22');
+                    let from = '';
+                    let to = '';
+                    if (range === 'Cũ hơn 6 tháng') {
+                      const d = new Date(now);
+                      d.setMonth(d.getMonth() - 6);
+                      to = d.toISOString().split('T')[0];
+                    } else if (range === 'Cũ hơn 1 năm') {
+                      const d = new Date(now);
+                      d.setFullYear(d.getFullYear() - 1);
+                      to = d.toISOString().split('T')[0];
+                    } else if (range === 'Cũ hơn 2 năm') {
+                      const d = new Date(now);
+                      d.setFullYear(d.getFullYear() - 2);
+                      to = d.toISOString().split('T')[0];
+                    }
+                    setFilters((prev) => ({
+                      ...prev,
+                      timeRange: range,
+                      fromDate: from,
+                      toDate: to,
+                    }));
+                  }}
+                  className="w-full py-1.5 pl-3 pr-8 bg-white border border-slate-300 rounded-sm text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand shadow-xs appearance-none cursor-pointer"
                 >
                   <option value="Chọn thời gian">Chọn thời gian</option>
                   <option value="Cũ hơn 6 tháng">Cũ hơn 6 tháng</option>
                   <option value="Cũ hơn 1 năm">Cũ hơn 1 năm</option>
                   <option value="Cũ hơn 2 năm">Cũ hơn 2 năm</option>
-                  <option value="Custom">Custom</option>
+                  <option value="Custom">Custom (Tùy chọn ngày)</option>
                 </select>
                 <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
                   <i className="fa-solid fa-chevron-down text-[10px]"></i>
@@ -420,7 +445,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     type="date"
                     value={filters.fromDate}
                     onChange={(e) =>
-                      setFilters((prev) => ({ ...prev, fromDate: e.target.value }))
+                      setFilters((prev) => ({
+                        ...prev,
+                        fromDate: e.target.value,
+                        timeRange: 'Custom',
+                      }))
                     }
                     placeholder="Từ ngày"
                     className="w-full py-1 pl-7 pr-2 bg-white border border-slate-300 rounded-sm text-xs focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand text-slate-700"
@@ -434,7 +463,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     type="date"
                     value={filters.toDate}
                     onChange={(e) =>
-                      setFilters((prev) => ({ ...prev, toDate: e.target.value }))
+                      setFilters((prev) => ({
+                        ...prev,
+                        toDate: e.target.value,
+                        timeRange: 'Custom',
+                      }))
                     }
                     placeholder="Đến ngày"
                     className="w-full py-1 pl-7 pr-2 bg-white border border-slate-300 rounded-sm text-xs focus:outline-none focus:ring-1 focus:ring-brand focus:border-brand text-slate-700"

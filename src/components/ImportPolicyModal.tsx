@@ -1,16 +1,71 @@
 import React, { useState } from 'react';
-import { SecurityRule } from '../types';
+import { SecurityRule, RuleAction } from '../types';
 
 interface ImportPolicyModalProps {
   isOpen: boolean;
   onClose: () => void;
   onImport: (newRules: SecurityRule[], replace: boolean) => void;
+  onNotify?: (type: 'success' | 'error' | 'info', title: string, message: string) => void;
+}
+
+// Robust CSV parser handling quotes, commas, and line breaks
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let curCell = '';
+  let curRow: string[] = [];
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (char === '"' || char === "'") {
+      if (inQuotes && nextChar === char) {
+        curCell += char;
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      curRow.push(curCell.trim());
+      curCell = '';
+    } else if ((char === '\r' || char === '\n') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        i++;
+      }
+      curRow.push(curCell.trim());
+      if (curRow.some((cell) => cell.length > 0)) {
+        rows.push(curRow);
+      }
+      curRow = [];
+      curCell = '';
+    } else {
+      curCell += char;
+    }
+  }
+
+  if (curCell || curRow.length > 0) {
+    curRow.push(curCell.trim());
+    if (curRow.some((cell) => cell.length > 0)) {
+      rows.push(curRow);
+    }
+  }
+
+  return rows;
+}
+
+function normalizeHeader(h: string): string {
+  return h
+    .toLowerCase()
+    .replace(/^["']|["']$/g, '')
+    .replace(/[^a-z0-9]/g, '');
 }
 
 export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
   isOpen,
   onClose,
   onImport,
+  onNotify,
 }) => {
   const [importMode, setImportMode] = useState<'file' | 'text'>('file');
   const [pastedText, setPastedText] = useState('');
@@ -32,60 +87,211 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
       if (text.trim().startsWith('[') || text.trim().startsWith('{')) {
         const parsed = JSON.parse(text);
         const rulesArr = Array.isArray(parsed) ? parsed : [parsed];
-        setPreviewRules(rulesArr);
+        const normalizedJsonRules: SecurityRule[] = rulesArr.map((r, i) => ({
+          id: r.id || `import-json-${i}-${Date.now()}`,
+          name: r.name || `Rule-${i + 1}`,
+          tags: Array.isArray(r.tags) ? r.tags : (r.tags ? [r.tags] : ['Imported']),
+          group: r.group || 'Any',
+          type: r.type || 'Untrust',
+          sourceZone: r.sourceZone || 'Trust',
+          sourceAddress: r.sourceAddress || 'Any',
+          sourceUser: r.sourceUser || 'Any',
+          sourceDevice: r.sourceDevice || 'Any',
+          destinationZone: r.destinationZone || 'Untrust',
+          destinationAddress: r.destinationAddress || 'Any',
+          destinationDevice: r.destinationDevice || 'Any',
+          application: Array.isArray(r.application) ? r.application : (r.application ? [r.application] : ['any']),
+          service: Array.isArray(r.service) ? r.service : (r.service ? [r.service] : ['any']),
+          urlCategory: r.urlCategory || 'any',
+          action: r.action || 'Allow',
+          profile: r.profile || 'default',
+          options: r.options || 'Log at Session End',
+          ruleUuid: r.ruleUuid || `${Math.random().toString(36).substr(2, 9)}`,
+          description: r.description || '',
+          hitCount: typeof r.hitCount === 'number' ? r.hitCount : 0,
+          hitCountFormatted: r.hitCountFormatted || `${r.hitCount || 0} hits`,
+          lastHit: r.lastHit || 'Never',
+          firstHit: r.firstHit || new Date().toISOString().split('T')[0],
+          appsSeen: r.appsSeen || 1,
+          daysNoNewApps: r.daysNoNewApps || 0,
+          modified: r.modified || new Date().toISOString().split('T')[0],
+          created: r.created || new Date().toISOString().split('T')[0],
+          enabled: r.enabled !== false,
+          hasSchedule: !!r.hasSchedule,
+        }));
+        setPreviewRules(normalizedJsonRules);
       } else {
         // Parse CSV
-        const lines = text.trim().split('\n');
-        if (lines.length < 2) return;
-        const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
+        const rows = parseCSV(text.trim());
+        if (rows.length < 2) {
+          const msg = 'CSV must contain a header row and at least one data row.';
+          setErrorMsg(msg);
+          setPreviewRules([]);
+          onNotify?.('error', 'Import File Parsing Failed', msg);
+          return;
+        }
+
+        const rawHeaders = rows[0];
+        const normalizedHeaders = rawHeaders.map(normalizeHeader);
+
+        // Check if 0th column is a row index column (empty string, '#', 'index', etc.)
+        const isFirstColRowIndex =
+          normalizedHeaders[0] === '' ||
+          normalizedHeaders[0] === 'id' ||
+          normalizedHeaders[0] === 'index' ||
+          normalizedHeaders[0] === 'row' ||
+          normalizedHeaders[0] === '#';
+
+        const indexOffset = isFirstColRowIndex ? 1 : 0;
+
+        const findColIndex = (candidates: string[]) => {
+          for (const cand of candidates) {
+            const candNorm = normalizeHeader(cand);
+            const idx = normalizedHeaders.indexOf(candNorm);
+            if (idx !== -1) return idx;
+          }
+          return -1;
+        };
+
+        const getColIdx = (candidates: string[], defaultPos: number) => {
+          const found = findColIndex(candidates);
+          if (found !== -1) return found;
+          const posWithOffset = defaultPos + indexOffset;
+          if (normalizedHeaders.length > posWithOffset) return posWithOffset;
+          return -1;
+        };
+
+        const nameIdx = getColIdx(['name', 'rulename', 'rule', 'policyname'], 0);
+        const tagsIdx = getColIdx(['tags', 'tag'], 1);
+        const groupIdx = getColIdx(['group', 'rulegroup'], 2);
+        const typeIdx = getColIdx(['type', 'ruletype'], 3);
+        const srcZoneIdx = getColIdx(['sourcezone', 'source zone', 'fromzone', 'from'], 4);
+        const srcAddrIdx = getColIdx(['sourceaddress', 'source address', 'source', 'src'], 5);
+        const srcUserIdx = getColIdx(['sourceuser', 'source user', 'user'], 6);
+        const srcDevIdx = getColIdx(['sourcedevice', 'source device'], 7);
+        const dstZoneIdx = getColIdx(['destinationzone', 'destination zone', 'tozone', 'to'], 8);
+        const dstAddrIdx = getColIdx(['destinationaddress', 'destination address', 'destination', 'dst'], 9);
+        const dstDevIdx = getColIdx(['destinationdevice', 'destination device'], 10);
+        const appIdx = getColIdx(['application', 'applications', 'app', 'apps'], 11);
+        const srvIdx = getColIdx(['service', 'services', 'ports', 'port'], 12);
+        const urlCatIdx = getColIdx(['urlcategory', 'url category', 'category'], 13);
+        const actionIdx = getColIdx(['action', 'ruleaction'], 14);
+        const profileIdx = getColIdx(['profile', 'profiles', 'securityprofile'], 15);
+        const optionsIdx = getColIdx(['options', 'option', 'logoptions'], 16);
+        const uuidIdx = getColIdx(['ruleuuid', 'uuid', 'rule uuid'], 17);
+        const descIdx = getColIdx(['ruleusagedescription', 'description', 'desc', 'comment'], 18);
+        const hitCountIdx = getColIdx(['ruleusagehitcount', 'hitcount', 'hit count', 'hits'], 19);
+        const lastHitIdx = getColIdx(['ruleusagelasthit', 'lasthit', 'last hit'], 20);
+        const firstHitIdx = getColIdx(['ruleusagefirsthit', 'firsthit', 'first hit'], 21);
+        const appsSeenIdx = getColIdx(['ruleusageappsseen', 'appsseen', 'apps seen'], 22);
+        const daysNoNewIdx = getColIdx(['dayswithnonewapps', 'daysnonewapps'], 23);
+        const modifiedIdx = getColIdx(['modified', 'updated', 'lastmodified'], 24);
+        const createdIdx = getColIdx(['created', 'creationdate'], 25);
+        const enabledIdx = findColIndex(['enabled', 'status', 'state', 'disabled']);
+
         const parsedRules: SecurityRule[] = [];
 
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split(',').map((c) => c.trim());
-          if (cols.length < 2) continue;
+        for (let i = 1; i < rows.length; i++) {
+          const cols = rows[i];
+          if (cols.length === 0 || (cols.length === 1 && !cols[0])) continue;
 
-          const nameIdx = headers.indexOf('name');
-          const actionIdx = headers.indexOf('action');
-          const srcZoneIdx = headers.indexOf('sourcezone') >= 0 ? headers.indexOf('sourcezone') : headers.indexOf('source zone');
-          const dstZoneIdx = headers.indexOf('destinationzone') >= 0 ? headers.indexOf('destinationzone') : headers.indexOf('destination zone');
+          const getValue = (idx: number, fallback: string = '') => {
+            if (idx !== -1 && cols[idx] !== undefined && cols[idx] !== null) {
+              const str = cols[idx].trim();
+              return str ? str.replace(/;(?!\s)/g, '; ') : fallback;
+            }
+            return fallback;
+          };
+
+          const parseList = (idx: number, fallback: string[]) => {
+            const raw = getValue(idx, '');
+            if (!raw) return fallback;
+            const items = raw.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+            return items.length > 0 ? items : fallback;
+          };
+
+          const rawAction = getValue(actionIdx, 'Allow').toLowerCase();
+          let action: RuleAction = 'Allow';
+          if (rawAction.includes('allow') || rawAction === 'pass') {
+            action = 'Allow';
+          } else if (rawAction.includes('deny') || rawAction === 'block') {
+            action = 'Deny';
+          } else if (rawAction.includes('drop') || rawAction === 'reset') {
+            action = 'Drop';
+          } else if (rawAction) {
+            action = 'Khác';
+          }
+
+          let enabled = true;
+          if (enabledIdx !== -1) {
+            const val = cols[enabledIdx]?.toLowerCase().trim();
+            if (val === 'false' || val === 'no' || val === '0' || val === 'disabled') {
+              enabled = false;
+            }
+          }
+
+          const rawHits = getValue(hitCountIdx, '0');
+          let hitCount = parseInt(rawHits.replace(/[^0-9]/g, ''), 10) || 0;
+          let hitCountFormatted = `${hitCount.toLocaleString()} hits`;
+          if (hitCount >= 1000000000) {
+            hitCountFormatted = `${(hitCount / 1000000000).toFixed(2)}B hits`;
+          } else if (hitCount >= 1000000) {
+            hitCountFormatted = `${(hitCount / 1000000).toFixed(1)}M hits`;
+          } else if (hitCount >= 1000) {
+            hitCountFormatted = `${(hitCount / 1000).toFixed(1)}k hits`;
+          } else if (rawHits.toLowerCase().includes('m') || rawHits.toLowerCase().includes('k')) {
+            hitCountFormatted = rawHits;
+          }
+
+          const ruleName = getValue(nameIdx, `Imported-Rule-${i}`);
 
           parsedRules.push({
-            id: `import-${i}-${Date.now()}`,
-            name: nameIdx >= 0 && cols[nameIdx] ? cols[nameIdx] : `Imported-Rule-${i}`,
-            tags: ['Imported'],
-            group: 'Imported',
-            type: 'Untrust',
-            sourceZone: srcZoneIdx >= 0 && cols[srcZoneIdx] ? cols[srcZoneIdx] : 'Trust',
-            sourceAddress: 'Any',
-            sourceUser: 'Any',
-            sourceDevice: 'Any',
-            destinationZone: dstZoneIdx >= 0 && cols[dstZoneIdx] ? cols[dstZoneIdx] : 'Untrust',
-            destinationAddress: 'Any',
-            destinationDevice: 'Any',
-            application: ['web-browsing'],
-            service: ['service-http'],
-            urlCategory: 'any',
-            action: (actionIdx >= 0 && cols[actionIdx] ? cols[actionIdx] : 'Allow') as any,
-            profile: 'default',
-            options: 'Log at Session End',
-            ruleUuid: `${Math.random().toString(36).substr(2, 9)}`,
-            description: 'Imported from CSV file',
-            hitCount: 0,
-            hitCountFormatted: '0 hits',
-            lastHit: 'Never',
-            firstHit: new Date().toISOString().split('T')[0],
-            appsSeen: 1,
-            daysNoNewApps: 0,
-            modified: new Date().toISOString().split('T')[0],
-            created: new Date().toISOString().split('T')[0],
-            enabled: true,
+            id: `import-csv-${i}-${Date.now()}`,
+            name: ruleName,
+            tags: parseList(tagsIdx, ['Imported']),
+            group: getValue(groupIdx, 'Any'),
+            type: getValue(typeIdx, 'Untrust'),
+            sourceZone: getValue(srcZoneIdx, 'Trust'),
+            sourceAddress: getValue(srcAddrIdx, 'Any'),
+            sourceUser: getValue(srcUserIdx, 'Any'),
+            sourceDevice: getValue(srcDevIdx, 'Any'),
+            destinationZone: getValue(dstZoneIdx, 'Untrust'),
+            destinationAddress: getValue(dstAddrIdx, 'Any'),
+            destinationDevice: getValue(dstDevIdx, 'Any'),
+            application: parseList(appIdx, ['web-browsing']),
+            service: parseList(srvIdx, ['service-http']),
+            urlCategory: getValue(urlCatIdx, 'any'),
+            action,
+            profile: getValue(profileIdx, 'default'),
+            options: getValue(optionsIdx, 'Log at Session End'),
+            ruleUuid: getValue(uuidIdx, `${Math.random().toString(36).substr(2, 9)}`),
+            description: getValue(descIdx, 'Imported from CSV policy file'),
+            hitCount,
+            hitCountFormatted,
+            lastHit: getValue(lastHitIdx, 'Never'),
+            firstHit: getValue(firstHitIdx, new Date().toISOString().split('T')[0]),
+            appsSeen: parseInt(getValue(appsSeenIdx, '1'), 10) || 1,
+            daysNoNewApps: parseInt(getValue(daysNoNewIdx, '0'), 10) || 0,
+            modified: getValue(modifiedIdx, new Date().toISOString().split('T')[0]),
+            created: getValue(createdIdx, new Date().toISOString().split('T')[0]),
+            enabled,
           });
         }
-        setPreviewRules(parsedRules);
+
+        if (parsedRules.length === 0) {
+          const msg = 'Could not extract any valid security rules from CSV content.';
+          setErrorMsg(msg);
+          setPreviewRules([]);
+          onNotify?.('error', 'Import Failed', msg);
+        } else {
+          setPreviewRules(parsedRules);
+        }
       }
     } catch (err) {
-      setErrorMsg('Invalid CSV or JSON format. Please check your data structure.');
+      const msg = 'Invalid CSV or JSON format. Please check your file data structure.';
+      setErrorMsg(msg);
       setPreviewRules([]);
+      onNotify?.('error', 'Import Format Error', msg);
     }
   };
 
@@ -101,21 +307,33 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
         handleTextChange(content);
       }
     };
+    reader.onerror = () => {
+      const msg = `Failed to read file ${file.name}.`;
+      setErrorMsg(msg);
+      onNotify?.('error', 'File Upload Failed', msg);
+    };
     reader.readAsText(file);
   };
 
   const handleImportSubmit = () => {
     if (previewRules.length === 0) {
-      setErrorMsg('No valid rules found to import.');
+      const msg = 'No valid rules found to import.';
+      setErrorMsg(msg);
+      onNotify?.('error', 'Import Failed', msg);
       return;
     }
     onImport(previewRules, replaceExisting);
+    onNotify?.(
+      'success',
+      'Import Successful',
+      `Successfully imported ${previewRules.length} security policy rule(s)${replaceExisting ? ' (replaced existing rules)' : ''}.`
+    );
     onClose();
   };
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-xl overflow-hidden border border-slate-200">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden border border-slate-200">
         <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
           <h2 className="text-base font-bold text-slate-800 flex items-center">
             <i className="fa-solid fa-arrow-up-from-bracket text-brand mr-2"></i>
@@ -126,7 +344,7 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 max-h-[85vh] overflow-y-auto">
           <div className="flex border-b border-slate-200">
             <button
               onClick={() => setImportMode('file')}
@@ -173,7 +391,7 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
                 rows={5}
                 value={pastedText}
                 onChange={(e) => handleTextChange(e.target.value)}
-                placeholder="Name, SourceZone, DestinationZone, Action&#10;Allow-Web, Trust, Untrust, Allow&#10;Block-Media, Trust, Untrust, Deny"
+                placeholder={'Name, Source Zone, Source Address, Destination Zone, Destination Address, Application, Service, Action\nAllow-Web, Trust, 192.168.1.0/24, Untrust, Any, "web-browsing, ssl", "service-http, service-https", Allow\nBlock-Media, Trust, Marketing-VLAN, Untrust, Any, facebook, application-default, Deny'}
                 className="w-full p-2 border border-slate-300 rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-brand"
               />
             </div>
@@ -182,22 +400,50 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
           {errorMsg && <p className="text-xs text-red-600 font-medium">{errorMsg}</p>}
 
           {previewRules.length > 0 && (
-            <div className="bg-slate-50 p-3 rounded border border-slate-200">
-              <div className="flex justify-between items-center mb-1">
+            <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-2">
+              <div className="flex justify-between items-center">
                 <span className="text-xs font-bold text-slate-700">
-                  Preview ({previewRules.length} rules found):
+                  Import Preview ({previewRules.length} rules detected):
                 </span>
               </div>
-              <ul className="text-xs text-slate-600 space-y-1 max-h-24 overflow-y-auto pr-1">
-                {previewRules.map((r, idx) => (
-                  <li key={idx} className="flex justify-between border-b border-slate-200 pb-0.5">
-                    <span className="font-semibold text-slate-800">{r.name}</span>
-                    <span className="text-[10px] text-slate-500">
-                      {r.sourceZone} ➔ {r.destinationZone} ({r.action})
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <div className="max-h-40 overflow-y-auto border border-slate-200 rounded bg-white">
+                <table className="w-full text-left text-[11px] min-w-[600px]">
+                  <thead className="bg-slate-100 text-slate-600 font-semibold sticky top-0">
+                    <tr>
+                      <th className="p-1.5 border-b">Name</th>
+                      <th className="p-1.5 border-b">Group</th>
+                      <th className="p-1.5 border-b">Type</th>
+                      <th className="p-1.5 border-b">Source Zone</th>
+                      <th className="p-1.5 border-b">Source Address</th>
+                      <th className="p-1.5 border-b">Destination Zone</th>
+                      <th className="p-1.5 border-b">Destination Address</th>
+                      <th className="p-1.5 border-b">Application</th>
+                      <th className="p-1.5 border-b">Service</th>
+                      <th className="p-1.5 border-b">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {previewRules.map((r, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="p-1.5 font-semibold text-slate-800">{r.name}</td>
+                        <td className="p-1.5 text-slate-500">{r.group}</td>
+                        <td className="p-1.5 text-slate-500">{r.type}</td>
+                        <td className="p-1.5 text-slate-600">{r.sourceZone}</td>
+                        <td className="p-1.5 text-slate-600">{r.sourceAddress}</td>
+                        <td className="p-1.5 text-slate-600">{r.destinationZone}</td>
+                        <td className="p-1.5 text-slate-600">{r.destinationAddress}</td>
+                        <td className="p-1.5 text-orange-700 font-medium">{r.application.join(', ')}</td>
+                        <td className="p-1.5 text-slate-600 font-mono">{r.service.join(', ')}</td>
+                        <td className="p-1.5">
+                          <span className={`font-bold ${r.action === 'Allow' ? 'text-green-600' : 'text-red-600'}`}>
+                            {r.action}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -236,3 +482,4 @@ export const ImportPolicyModal: React.FC<ImportPolicyModalProps> = ({
     </div>
   );
 };
+

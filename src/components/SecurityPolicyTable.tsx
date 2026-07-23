@@ -10,6 +10,7 @@ interface SecurityPolicyTableProps {
   setFilters: React.Dispatch<React.SetStateAction<RuleFilters>>;
   onOpenAddModal: () => void;
   onOpenEditModal: (rule: SecurityRule) => void;
+  onNotify?: (type: 'success' | 'error' | 'info', title: string, message: string) => void;
 }
 
 export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
@@ -20,10 +21,11 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
   setFilters,
   onOpenAddModal,
   onOpenEditModal,
+  onNotify,
 }) => {
   const [selectedRuleIds, setSelectedRuleIds] = useState<Set<string>>(new Set());
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize] = useState(10);
+  const [pageSize, setPageSize] = useState<number>(50);
 
   // Active columns based on visibility
   const activeColumns = useMemo(() => {
@@ -86,6 +88,15 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
         return false;
       }
 
+      // Toolbar Action Filter
+      if (
+        filters.actionFilter &&
+        filters.actionFilter !== 'Any' &&
+        rule.action !== filters.actionFilter
+      ) {
+        return false;
+      }
+
       // Sidebar Action filters
       const activeActions = Object.entries(filters.actions)
         .filter(([, isChecked]) => isChecked)
@@ -139,6 +150,19 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
     const start = (currentPage - 1) * pageSize;
     return filteredRules.slice(start, start + pageSize);
   }, [filteredRules, currentPage, pageSize]);
+
+  const getPageNumbers = () => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    if (currentPage <= 4) {
+      return [1, 2, 3, 4, 5, '...', totalPages];
+    }
+    if (currentPage >= totalPages - 3) {
+      return [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+    }
+    return [1, '...', currentPage - 1, currentPage, currentPage + 1, '...', totalPages];
+  };
 
   // Selection handlers
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -202,29 +226,49 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
 
   // Export visible rules to CSV
   const handleGenerateCSV = () => {
-    const keysToExport = activeColumns.map((col) => col.key);
-    const headers = activeColumns.map((col) => `"${col.label}"`).join(',');
+    try {
+      if (filteredRules.length === 0) {
+        onNotify?.('error', 'CSV Export Failed', 'No security policy rules match the current view to export.');
+        return;
+      }
 
-    const rows = filteredRules.map((rule) => {
-      return keysToExport
-        .map((key) => {
-          let val = (rule as any)[key];
-          if (Array.isArray(val)) val = val.join('; ');
-          if (typeof val === 'boolean') val = val ? 'Yes' : 'No';
-          if (val === undefined || val === null) val = '';
-          return `"${String(val).replace(/"/g, '""')}"`;
-        })
-        .join(',');
-    });
+      const keysToExport = activeColumns.map((col) => col.key);
+      const headers = activeColumns.map((col) => `"${col.label}"`).join(',');
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Security_Policies_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      const rows = filteredRules.map((rule) => {
+        return keysToExport
+          .map((key) => {
+            let val = (rule as any)[key];
+            if (Array.isArray(val)) val = val.join('; ');
+            if (typeof val === 'boolean') val = val ? 'Yes' : 'No';
+            if (val === undefined || val === null) val = '';
+            return `"${String(val).replace(/"/g, '""')}"`;
+          })
+          .join(',');
+      });
+
+      const fileName = `Security_Policies_${new Date().toISOString().split('T')[0]}.csv`;
+      const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows].join('\n');
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', fileName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      onNotify?.(
+        'success',
+        'CSV Generated Successfully',
+        `Exported ${filteredRules.length} security rules to ${fileName}.`
+      );
+    } catch (err) {
+      onNotify?.(
+        'error',
+        'CSV Generation Failed',
+        `Failed to generate CSV file: ${err instanceof Error ? err.message : 'Unknown error'}`
+      );
+    }
   };
 
   // Helper renderer for table cell values
@@ -276,7 +320,11 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
             {rule.tags.map((tag, idx) => (
               <span
                 key={idx}
-                className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-xs text-slate-600 font-medium"
+                className={`px-1.5 py-0.5 rounded text-xs font-medium ${
+                  tag === 'none'
+                    ? 'bg-slate-50 text-slate-400 border border-slate-200'
+                    : 'bg-slate-100 border border-slate-200 text-slate-600'
+                }`}
               >
                 {tag}
               </span>
@@ -284,10 +332,50 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
           </div>
         );
 
-      case 'application':
+      case 'sourceAddress':
+      case 'destinationAddress':
+      case 'sourceZone':
+      case 'destinationZone': {
+        const strVal = String((rule as any)[key] || 'any');
+        const items = strVal.split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+        if (items.length <= 2) {
+          return (
+            <span className="text-slate-700 font-mono text-xs truncate max-w-[200px] block" title={strVal}>
+              {strVal || 'any'}
+            </span>
+          );
+        }
         return (
-          <div className="flex items-center space-x-1 flex-wrap gap-y-1">
-            {rule.application.map((app, idx) => (
+          <div className="flex items-center space-x-1" title={strVal}>
+            <span className="text-slate-700 font-mono text-xs truncate max-w-[150px]">
+              {items.slice(0, 2).join('; ')}
+            </span>
+            <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-bold shrink-0">
+              +{items.length - 2}
+            </span>
+          </div>
+        );
+      }
+
+      case 'application': {
+        const apps = rule.application;
+        if (apps.length <= 3) {
+          return (
+            <div className="flex items-center space-x-1 flex-wrap gap-y-1">
+              {apps.map((app, idx) => (
+                <span
+                  key={idx}
+                  className="px-1.5 py-0.5 bg-orange-100 border border-orange-200 text-orange-800 rounded text-xs font-medium"
+                >
+                  {app}
+                </span>
+              ))}
+            </div>
+          );
+        }
+        return (
+          <div className="flex items-center space-x-1" title={apps.join(', ')}>
+            {apps.slice(0, 2).map((app, idx) => (
               <span
                 key={idx}
                 className="px-1.5 py-0.5 bg-orange-100 border border-orange-200 text-orange-800 rounded text-xs font-medium"
@@ -295,11 +383,27 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                 {app}
               </span>
             ))}
+            <span className="px-1.5 py-0.5 bg-orange-200 text-orange-900 border border-orange-300 rounded text-xs font-bold shrink-0">
+              +{apps.length - 2}
+            </span>
           </div>
         );
+      }
 
-      case 'service':
-        return <span className="text-slate-600 font-mono text-xs">{rule.service.join(', ')}</span>;
+      case 'service': {
+        const srvs = rule.service;
+        if (srvs.length <= 3) {
+          return <span className="text-slate-600 font-mono text-xs">{srvs.join(', ')}</span>;
+        }
+        return (
+          <div className="flex items-center space-x-1 font-mono text-xs text-slate-600" title={srvs.join(', ')}>
+            <span>{srvs.slice(0, 2).join(', ')}</span>
+            <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-slate-600 rounded text-[10px] font-bold shrink-0">
+              +{srvs.length - 2}
+            </span>
+          </div>
+        );
+      }
 
       case 'action':
         return (
@@ -357,6 +461,28 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
             {rule.description || '—'}
           </span>
         );
+
+      case 'options': {
+        const rawOptions = rule.options || 'none';
+        const parts = rawOptions
+          .split(';')
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        if (parts.length <= 1) {
+          return <span className="text-slate-600 text-xs">{rawOptions}</span>;
+        }
+
+        return (
+          <div className="flex flex-col space-y-0.5" title={rawOptions}>
+            {parts.map((part, idx) => (
+              <span key={idx} className="text-slate-600 text-xs block leading-tight">
+                {part}
+              </span>
+            ))}
+          </div>
+        );
+      }
 
       default:
         const val = (rule as any)[key];
@@ -525,6 +651,7 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                   className="rounded border-slate-300 text-brand focus:ring-brand accent-orange-600"
                 />
               </th>
+              <th className="px-2 py-2.5 border-b border-r border-slate-200 w-12 text-center bg-slate-50 min-w-[45px]"></th>
               {activeColumns.map((col) => (
                 <th
                   key={col.key}
@@ -540,7 +667,7 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
             {paginatedRules.length === 0 ? (
               <tr>
                 <td
-                  colSpan={activeColumns.length + 1}
+                  colSpan={activeColumns.length + 2}
                   className="px-4 py-12 text-center text-slate-400 bg-slate-50/50"
                 >
                   <i className="fa-solid fa-shield-halved text-3xl mb-2 block text-slate-300"></i>
@@ -548,8 +675,9 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                 </td>
               </tr>
             ) : (
-              paginatedRules.map((rule) => {
+              paginatedRules.map((rule, idx) => {
                 const isSelected = selectedRuleIds.has(rule.id);
+                const rowNumber = (currentPage - 1) * pageSize + idx + 1;
                 return (
                   <tr
                     key={rule.id}
@@ -564,6 +692,9 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
                         onChange={() => handleToggleSelectRule(rule.id)}
                         className="rounded border-slate-300 text-brand focus:ring-brand accent-orange-600"
                       />
+                    </td>
+                    <td className="px-2 py-2 border-r border-slate-200 text-center font-mono text-slate-500 text-xs font-medium select-none">
+                      {rowNumber}
                     </td>
                     {activeColumns.map((col) => (
                       <td
@@ -582,39 +713,67 @@ export const SecurityPolicyTable: React.FC<SecurityPolicyTableProps> = ({
       </div>
 
       {/* Pagination Bar */}
-      <div className="px-6 py-2.5 border-t border-slate-200 bg-white flex justify-between items-center shrink-0">
-        <div className="text-xs text-slate-500 font-medium">
-          Showing {filteredRules.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} to{' '}
-          {Math.min(currentPage * pageSize, filteredRules.length)} of {filteredRules.length} rules
+      <div className="px-6 py-2.5 border-t border-slate-200 bg-white flex flex-wrap justify-between items-center gap-2 shrink-0">
+        <div className="flex items-center space-x-3 text-xs text-slate-500 font-medium">
+          <span>
+            Showing {filteredRules.length > 0 ? (currentPage - 1) * pageSize + 1 : 0} to{' '}
+            {Math.min(currentPage * pageSize, filteredRules.length)} of {filteredRules.length} rules
+          </span>
+          <div className="flex items-center space-x-1.5 border-l border-slate-200 pl-3">
+            <span className="text-slate-500">Rows per page:</span>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-slate-300 text-slate-700 text-xs rounded px-2 py-1 focus:outline-none focus:border-brand font-medium cursor-pointer hover:border-slate-400"
+            >
+              {[20, 30, 40, 50, 75, 100].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="flex items-center space-x-1 text-xs text-slate-600">
           <button
             disabled={currentPage === 1}
             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-            className="px-2.5 py-1 hover:text-slate-900 disabled:opacity-40 flex items-center border border-slate-200 rounded mr-1 hover:bg-slate-50 cursor-pointer"
+            className="px-2.5 py-1 hover:text-slate-900 disabled:opacity-40 flex items-center border border-slate-200 rounded mr-1 hover:bg-slate-50 cursor-pointer disabled:cursor-not-allowed"
           >
             <i className="fa-solid fa-chevron-left text-[10px] mr-1"></i> Previous
           </button>
 
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-            <button
-              key={page}
-              onClick={() => setCurrentPage(page)}
-              className={`w-7 h-7 rounded flex items-center justify-center font-medium text-xs cursor-pointer ${
-                currentPage === page
-                  ? 'bg-brand text-white font-bold shadow-2xs'
-                  : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200'
-              }`}
-            >
-              {page}
-            </button>
-          ))}
+          {getPageNumbers().map((page, idx) => {
+            if (page === '...') {
+              return (
+                <span key={`ellipsis-${idx}`} className="w-7 h-7 flex items-center justify-center text-slate-400 select-none">
+                  ...
+                </span>
+              );
+            }
+            return (
+              <button
+                key={page}
+                onClick={() => setCurrentPage(Number(page))}
+                className={`w-7 h-7 rounded flex items-center justify-center font-medium text-xs cursor-pointer ${
+                  currentPage === page
+                    ? 'bg-brand text-white font-bold shadow-2xs'
+                    : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200'
+                }`}
+              >
+                {page}
+              </button>
+            );
+          })}
 
           <button
             disabled={currentPage === totalPages || totalPages === 0}
             onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-            className="px-2.5 py-1 hover:text-slate-900 disabled:opacity-40 flex items-center border border-slate-200 rounded ml-1 hover:bg-slate-50 cursor-pointer"
+            className="px-2.5 py-1 hover:text-slate-900 disabled:opacity-40 flex items-center border border-slate-200 rounded ml-1 hover:bg-slate-50 cursor-pointer disabled:cursor-not-allowed"
           >
             Next <i className="fa-solid fa-chevron-right text-[10px] ml-1"></i>
           </button>
