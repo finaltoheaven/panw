@@ -1,0 +1,6 @@
+{
+  "name": "Security Policy Management",
+  "description": "Palo Alto Networks security policy management interface with rule filtering, column customization, CSV export, and policy rule controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
